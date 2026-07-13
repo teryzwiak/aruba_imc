@@ -1,0 +1,35 @@
+---
+# Wgrywa listę linii CLI (config_lines) na switch Aruba AOS-CX przez REST/httpapi.
+# Zmienne przekazywane z app.py przez --extra-vars (@extra_vars.json):
+#   - config_lines: lista stringów (linie konfiguracji)
+#   - new_hostname: nowy hostname switcha
+
+- name: Wdrożenie konfiguracji Aruba AOS-CX
+  hosts: target_switch
+  gather_facts: no
+  connection: httpapi
+
+  tasks:
+    - name: Pobierz aktualne facts urządzenia (weryfikacja łączności)
+      arubanetworks.aoscx.aoscx_facts:
+        gather_subset: min
+      register: sw_facts
+
+    - name: Wyświetl model/wersję switcha
+      debug:
+        msg: "Połączono z: {{ sw_facts.ansible_facts.ansible_net_model | default('nieznany') }}"
+
+    - name: Wgraj wyrenderowaną konfigurację (linie CLI)
+      arubanetworks.aoscx.aoscx_config:
+        lines: "{{ config_lines }}"
+      register: config_result
+
+    - name: Ustaw nowy hostname
+      arubanetworks.aoscx.aoscx_config:
+        lines:
+          - "hostname {{ new_hostname }}"
+      when: new_hostname is defined and new_hostname | length > 0
+
+    - name: Zapisz konfigurację (checkpoint / running -> startup)
+      arubanetworks.aoscx.aoscx_config:
+        save_when: always

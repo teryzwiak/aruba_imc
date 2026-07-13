@@ -1,0 +1,17 @@
+! Bazowy szablon konfiguracji AOS-CX — dostosuj do standardu w Twojej firmie.
+! Zmienne dostępne: hostname, vlan_id, vlan_ip, vlan_prefix, gateway_ip, ntp_server
+! oraz dowolne dodatkowe zmienne dodane w tabeli "Dodatkowe zmienne" w aplikacji.
+
+hostname {{ hostname }}
+
+vlan {{ vlan_id }}
+
+interface vlan {{ vlan_id }}
+    ip address {{ vlan_ip }}/{{ vlan_prefix }}
+    no shutdown
+
+ip route 0.0.0.0/0 {{ gateway_ip }}
+
+{% if ntp_server %}
+ntp server {{ ntp_server }}
+{% endif %}
