@@ -1,0 +1,37 @@
+! Szablon: switch z uplinkiem trunk do rdzenia (LAG/LACP) — dostosuj do standardu w Twojej firmie.
+! Zmienne dostępne: hostname, vlan_id, vlan_ip, vlan_prefix, gateway_ip, ntp_server
+! oraz dowolne dodatkowe zmienne dodane w tabeli "Dodatkowe zmienne" w aplikacji.
+! Dodatkowo wykorzystywane (opcjonalne) zmienne:
+!   uplink_ports  — porty wchodzące w skład uplinku, np. "1/1/1-1/1/2"
+!   lag_id        — numer interfejsu LAG, np. 1
+!   trunk_allowed_vlans — lista VLAN-ów dozwolonych na trunku, np. "10,20,30"
+
+hostname {{ hostname }}
+
+vlan {{ vlan_id }}
+
+interface vlan {{ vlan_id }}
+    ip address {{ vlan_ip }}/{{ vlan_prefix }}
+    no shutdown
+
+ip route 0.0.0.0/0 {{ gateway_ip }}
+
+{% if lag_id is defined and uplink_ports is defined %}
+interface lag {{ lag_id }}
+    no routing
+    vlan trunk native {{ vlan_id }}
+    {% if trunk_allowed_vlans is defined %}
+    vlan trunk allowed {{ trunk_allowed_vlans }}
+    {% endif %}
+    lacp mode active
+    no shutdown
+
+interface {{ uplink_ports }}
+    no routing
+    lag {{ lag_id }}
+    no shutdown
+{% endif %}
+
+{% if ntp_server %}
+ntp server {{ ntp_server }}
+{% endif %}

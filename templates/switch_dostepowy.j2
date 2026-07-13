@@ -1,0 +1,25 @@
+! Szablon: switch dostępowy (porty access dla stacji końcowych) — dostosuj do standardu w Twojej firmie.
+! Zmienne dostępne: hostname, vlan_id, vlan_ip, vlan_prefix, gateway_ip, ntp_server
+! oraz dowolne dodatkowe zmienne dodane w tabeli "Dodatkowe zmienne" w aplikacji.
+! Dodatkowo wykorzystywana (opcjonalna) zmienna: access_ports, np. "1/1/1-1/1/24"
+
+hostname {{ hostname }}
+
+vlan {{ vlan_id }}
+
+interface vlan {{ vlan_id }}
+    ip address {{ vlan_ip }}/{{ vlan_prefix }}
+    no shutdown
+
+ip route 0.0.0.0/0 {{ gateway_ip }}
+
+{% if access_ports is defined %}
+interface {{ access_ports }}
+    no routing
+    vlan access {{ vlan_id }}
+    no shutdown
+{% endif %}
+
+{% if ntp_server %}
+ntp server {{ ntp_server }}
+{% endif %}

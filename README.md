@@ -37,8 +37,8 @@ przed uruchomieniem: `AOSCX_USER`, `AOSCX_PASS`, `IMC_HOST`, `IMC_PORT`, `IMC_US
 1. Uzupełnij dane urządzenia: IP switcha (aktualne/tymczasowe), nowy hostname,
    VLAN zarządzania + IP/maska, gateway.
 2. Dodaj opcjonalne zmienne (klucz/wartość) — trafią do kontekstu renderowania szablonu.
-3. Wybierz/edytuj szablon konfiguracji (domyślny w `ansible/templates/aoscx_config.j2`,
-   można też wgrać własny plik `.j2`).
+3. Wybierz predefiniowany szablon z folderu `templates/` (lub wgraj własny plik `.j2`)
+   i w razie potrzeby edytuj jego treść.
 4. Sprawdź podgląd wyrenderowanej konfiguracji.
 5. Kliknij **Wdróż konfigurację i dodaj do IMC** — aplikacja:
    - uruchamia `ansible-playbook` (plik `ansible/playbook.yml`) targetując podane IP,
@@ -57,17 +57,21 @@ przed uruchomieniem: `AOSCX_USER`, `AOSCX_PASS`, `IMC_HOST`, `IMC_PORT`, `IMC_US
   biblioteki `pyaoscx` (jest w `requirements.txt`).
 - Domyślnie `ansible_httpapi_validate_certs` i weryfikacja SSL dla IMC są wyłączone
   (typowe w środowiskach lab z certyfikatami self-signed) — włącz je w produkcji.
-- Szablon `aoscx_config.j2` jest przykładowy — dostosuj go do standardu konfiguracji
-  używanego w Twojej organizacji (SNMP, AAA, NTP, porty, itd.).
+- Szablony w folderze `templates/` są przykładowe — dostosuj je do standardu konfiguracji
+  używanego w Twojej organizacji (SNMP, AAA, NTP, porty, itd.). Dodanie kolejnego pliku
+  `.j2` do tego folderu automatycznie doda go do listy wyboru w aplikacji.
 
 ## Struktura projektu
 
 ```
 app.py                          # aplikacja Streamlit (frontend + orkiestracja)
 imc_client.py                   # klient REST do Aruba IMC (login, add_device)
-ansible/
-  ansible.cfg
-  playbook.yml                  # playbook wgrywający config na AOS-CX
-  templates/aoscx_config.j2     # domyślny szablon konfiguracji (Jinja2)
+aoscx_rest.py                   # weryfikacja MAC przez REST API switcha
+ansible.cfg
+playbook.yml                    # playbook wgrywający config na AOS-CX
+templates/                      # predefiniowane szablony konfiguracji (Jinja2)
+  standardowy.j2
+  switch_dostepowy.j2
+  uplink_trunk.j2
 requirements.txt
 ```

@@ -13,6 +13,7 @@ Uruchomienie:
     streamlit run app.py
 """
 
+import io
 import json
 import os
 import subprocess
@@ -21,14 +22,14 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
-from jinja2 import Environment, StrictUndefined, meta
+from jinja2 import Environment, StrictUndefined, meta, nodes
 
 from aoscx_rest import normalize_mac, verify_mac
 from imc_client import IMCClient, IMCError
 
 BASE_DIR = Path(__file__).parent
 PLAYBOOK = BASE_DIR / "playbook.yml"
-DEFAULT_TEMPLATE_PATH = BASE_DIR / "aoscx_config.j2"
+TEMPLATES_DIR = BASE_DIR / "templates"
 
 st.set_page_config(page_title="AOS-CX Seryjny Deploy + IMC", layout="wide")
 st.title("Seryjne wdrożenie switchy Aruba AOS-CX + rejestracja w IMC")
@@ -65,19 +66,89 @@ st.caption(
     "Jeśli Gateway jest pusty — użyty zostanie Wspólny gateway z sekcji poniżej."
 )
 
-_EMPTY_DEVICES = pd.DataFrame({
-    "IP switcha": [""],
-    "MAC adres": [""],
-    "Nowy hostname": [""],
-    "IP w VLAN": [""],
-    "Gateway (opcjonalnie)": [""],
-})
+_DEVICE_COLUMNS = [
+    "IP switcha",
+    "MAC adres",
+    "Nowy hostname",
+    "IP w VLAN",
+    "Gateway (opcjonalnie)",
+]
+_DEVICE_COLUMN_ALIASES = {
+    "IP switcha": ["ip switcha", "ip switch", "ip", "adres ip"],
+    "MAC adres": ["mac adres", "mac", "mac address", "adres mac"],
+    "Nowy hostname": ["nowy hostname", "hostname", "nazwa"],
+    "IP w VLAN": ["ip w vlan", "vlan ip", "ip vlan"],
+    "Gateway (opcjonalnie)": ["gateway (opcjonalnie)", "gateway", "brama"],
+}
+_EMPTY_DEVICES = pd.DataFrame({col: [""] for col in _DEVICE_COLUMNS})
+
+
+def _devices_excel_template() -> bytes:
+    buf = io.BytesIO()
+    pd.DataFrame(columns=_DEVICE_COLUMNS).to_excel(buf, index=False, engine="openpyxl")
+    return buf.getvalue()
+
+
+def _parse_devices_excel(file) -> pd.DataFrame:
+    excel_df = pd.read_excel(file, engine="openpyxl")
+    excel_df.columns = [str(c).strip() for c in excel_df.columns]
+    lower_cols = {c.lower(): c for c in excel_df.columns}
+
+    rename_map = {}
+    for target, aliases in _DEVICE_COLUMN_ALIASES.items():
+        for alias in aliases:
+            if alias in lower_cols:
+                rename_map[lower_cols[alias]] = target
+                break
+    excel_df = excel_df.rename(columns=rename_map)
+
+    for col in _DEVICE_COLUMNS:
+        if col not in excel_df.columns:
+            excel_df[col] = ""
+    excel_df = excel_df[_DEVICE_COLUMNS].fillna("")
+    return excel_df.astype(str).replace("nan", "")
+
+
+if "devices_df_base" not in st.session_state:
+    st.session_state["devices_df_base"] = _EMPTY_DEVICES
+if "devices_table_version" not in st.session_state:
+    st.session_state["devices_table_version"] = 0
+
+upload_col, template_col = st.columns([3, 1])
+with upload_col:
+    uploaded_devices_file = st.file_uploader(
+        "Wgraj plik Excel z urządzeniami (kolumny: IP switcha, MAC adres, Nowy hostname, "
+        "IP w VLAN, Gateway (opcjonalnie))",
+        type=["xlsx", "xls"],
+        key="devices_excel_uploader",
+    )
+with template_col:
+    st.write("")
+    st.download_button(
+        "Pobierz szablon Excel",
+        data=_devices_excel_template(),
+        file_name="szablon_urzadzenia.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+    )
+
+if (
+    uploaded_devices_file is not None
+    and st.session_state.get("_devices_excel_name") != uploaded_devices_file.name
+):
+    try:
+        st.session_state["devices_df_base"] = _parse_devices_excel(uploaded_devices_file)
+        st.session_state["devices_table_version"] += 1
+        st.session_state["_devices_excel_name"] = uploaded_devices_file.name
+        st.success(f"Wczytano {len(st.session_state['devices_df_base'])} urządzeń z pliku.")
+    except Exception as exc:
+        st.error(f"Błąd wczytywania pliku Excel: {exc}")
 
 devices_df: pd.DataFrame = st.data_editor(
-    _EMPTY_DEVICES,
+    st.session_state["devices_df_base"],
     num_rows="dynamic",
     use_container_width=True,
-    key="devices_table",
+    key=f"devices_table_{st.session_state['devices_table_version']}",
 )
 
 # ---------------------------------------------------------------------------
@@ -107,13 +178,67 @@ extra_vars_editor = st.data_editor(
 # Krok 3: szablon
 # ---------------------------------------------------------------------------
 st.subheader("4. Szablon konfiguracji (Jinja2, składnia CLI AOS-CX)")
-uploaded_template = st.file_uploader("Wgraj własny szablon .j2 (opcjonalnie)", type=["j2", "txt", "cfg"])
-if uploaded_template is not None:
-    template_text = uploaded_template.read().decode("utf-8")
-else:
-    template_text = DEFAULT_TEMPLATE_PATH.read_text(encoding="utf-8")
 
-template_text = st.text_area("Treść szablonu (edytowalna)", value=template_text, height=320)
+_TEMPLATE_LABELS = {
+    "standardowy": "Standardowy (VLAN zarządzania + gateway)",
+    "switch_dostepowy": "Switch dostępowy (porty access)",
+    "uplink_trunk": "Uplink / trunk (LAG do rdzenia)",
+}
+
+
+def _list_templates() -> dict[str, Path]:
+    if not TEMPLATES_DIR.is_dir():
+        return {}
+    files = sorted(TEMPLATES_DIR.glob("*.j2"))
+    return {_TEMPLATE_LABELS.get(p.stem, p.stem.replace("_", " ").capitalize()): p for p in files}
+
+
+available_templates = _list_templates()
+
+if "template_source_key" not in st.session_state:
+    st.session_state["template_source_key"] = None
+if "template_text_version" not in st.session_state:
+    st.session_state["template_text_version"] = 0
+if "template_base_text" not in st.session_state:
+    if available_templates:
+        st.session_state["template_base_text"] = next(iter(available_templates.values())).read_text(
+            encoding="utf-8"
+        )
+    else:
+        st.session_state["template_base_text"] = ""
+
+col_select, col_upload = st.columns(2)
+with col_select:
+    selected_template_label = st.selectbox(
+        "Predefiniowany szablon (z folderu templates/)",
+        options=list(available_templates.keys()) or ["(brak szablonów w folderze templates/)"],
+        disabled=not available_templates,
+        help="Szablony wczytywane z plików .j2 w folderze templates/ w katalogu projektu.",
+    )
+with col_upload:
+    uploaded_template = st.file_uploader("...lub wgraj własny szablon .j2", type=["j2", "txt", "cfg"])
+
+if uploaded_template is not None:
+    source_key = f"upload:{uploaded_template.name}:{uploaded_template.size}"
+    if st.session_state["template_source_key"] != source_key:
+        st.session_state["template_base_text"] = uploaded_template.read().decode("utf-8")
+        st.session_state["template_source_key"] = source_key
+        st.session_state["template_text_version"] += 1
+elif available_templates:
+    source_key = f"preset:{selected_template_label}"
+    if st.session_state["template_source_key"] != source_key:
+        st.session_state["template_base_text"] = available_templates[selected_template_label].read_text(
+            encoding="utf-8"
+        )
+        st.session_state["template_source_key"] = source_key
+        st.session_state["template_text_version"] += 1
+
+template_text = st.text_area(
+    "Treść szablonu (edytowalna)",
+    value=st.session_state["template_base_text"],
+    height=320,
+    key=f"template_text_area_{st.session_state['template_text_version']}",
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -137,10 +262,21 @@ def build_context(hostname: str, vlan_ip: str, effective_gateway: str) -> dict:
     return ctx
 
 
+def _optional_variable_names(ast: nodes.Template) -> set[str]:
+    """Zmienne używane wyłącznie w testach `is defined` / `is not defined`
+    nie są traktowane jako wymagane — szablon sam obsługuje ich brak."""
+    return {
+        node.node.name
+        for node in ast.find_all(nodes.Test)
+        if node.name in ("defined", "undefined") and isinstance(node.node, nodes.Name)
+    }
+
+
 def render_config(template_str: str, context: dict) -> str:
     env = Environment(undefined=StrictUndefined)
     ast = env.parse(template_str)
-    missing = [v for v in meta.find_undeclared_variables(ast) if v not in context]
+    optional = _optional_variable_names(ast)
+    missing = [v for v in meta.find_undeclared_variables(ast) if v not in context and v not in optional]
     if missing:
         raise ValueError(f"Szablon wymaga zmiennych, których nie podano: {', '.join(missing)}")
     return env.from_string(template_str).render(**context)
